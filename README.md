@@ -17,23 +17,16 @@ auto-updated whenever upstream publishes a new release.
 
 ## Manual deploy
 
-Go to **Actions → Build & deploy showcase → Run workflow**.  
+Go to **Actions → Build & deploy showcase → Run workflow**.
 Leave the tag field empty to always pull the current latest release.
 
 ## Local preview
 
 ```powershell
-.\scripts\New-IconPreview.ps1 -IconsPath "path\to\vscode-icons\icons" -Recurse
-# opens icon-preview.html in your browser
-Invoke-Item .\icon-preview.html
+.\New-IconPreview.ps1 -IconsPath "path\to\vscode-icons\icons"-OutputFile out.html
 ```
 
 ## Repo setup checklist
 
 1. **Enable GitHub Pages** — Settings → Pages → Source: **GitHub Actions**
-2. **No extra secrets needed** — the built-in `GITHUB_TOKEN` is sufficient
-
-## Custom icons
-
-Drop your own `.svg` files into `custom-icons/` and extend the deploy step
-in `deploy.yml` to copy them into `upstream/icons/` before running the script.
+2. **Run the deploy workflow once manually** — (Actions → Build & deploy showcase → Run workflow) to seed the first build
