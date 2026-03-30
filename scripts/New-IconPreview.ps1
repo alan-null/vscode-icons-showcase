@@ -447,7 +447,7 @@ $jsIconsArray
             }, 1200);
           });
         });
-      }(copyBtn, icon.name));
+      }(copyBtn, namePart));
 
       card.appendChild(iconWrap);
       card.appendChild(labelDiv);

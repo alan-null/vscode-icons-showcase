@@ -6,7 +6,7 @@ auto-updated whenever upstream publishes a new release.
 
 ## Live site
 
-👉 `https://<your-username>.github.io/vscode-icons-showcase/`
+**https://alan-null.github.io/vscode-icons-showcase/**
 
 ## How it works
 
