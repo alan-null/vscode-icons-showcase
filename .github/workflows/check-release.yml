@@ -1,0 +1,60 @@
+name: Check for new vscode-icons release
+
+on:
+  schedule:
+    # Runs every day at 08:00 UTC
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    # Allow manual trigger from Actions tab
+
+jobs:
+  check:
+    name: Compare upstream release tag
+    runs-on: ubuntu-latest
+    outputs:
+      new_release: ${{ steps.compare.outputs.new_release }}
+      tag:         ${{ steps.compare.outputs.tag }}
+
+    steps:
+      - name: Checkout showcase repo
+        uses: actions/checkout@v4
+
+      - name: Fetch latest vscode-icons release tag
+        id: upstream
+        run: |
+          TAG=$(curl -sSf \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/vscode-icons/vscode-icons/releases/latest \
+            | jq -r '.tag_name')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with stored tag
+        id: compare
+        run: |
+          STORED=""
+          if [[ -f .last-release ]]; then
+            STORED=$(cat .last-release)
+          fi
+          UPSTREAM="${{ steps.upstream.outputs.tag }}"
+          echo "Stored : $STORED"
+          echo "Upstream: $UPSTREAM"
+          if [[ "$UPSTREAM" != "$STORED" && -n "$UPSTREAM" ]]; then
+            echo "new_release=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "new_release=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$UPSTREAM" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Build & deploy showcase
+    needs: check
+    if: needs.check.outputs.new_release == 'true'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      tag: ${{ needs.check.outputs.tag }}
+    secrets: inherit
+    permissions:
+      contents: write
+      pages: write
+      id-token: write

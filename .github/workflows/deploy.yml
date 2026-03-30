@@ -1,0 +1,95 @@
+name: Build & deploy showcase
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "vscode-icons release tag to build from"
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "vscode-icons release tag (leave empty for latest)"
+        type: string
+        required: false
+
+permissions:
+  contents: write   # to commit .last-release back
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    name: Build HTML + publish Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      # ── 1. Checkout this repo ─────────────────────────────────────────────
+      - name: Checkout showcase repo
+        uses: actions/checkout@v4
+
+      # ── 2. Resolve tag (manual dispatch may leave it blank) ───────────────
+      - name: Resolve target tag
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [[ -z "$TAG" ]]; then
+            TAG=$(curl -sSf \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              https://api.github.com/repos/vscode-icons/vscode-icons/releases/latest \
+              | jq -r '.tag_name')
+          fi
+          echo "Using tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Sparse-checkout only the icons/ folder from vscode-icons ───────
+      - name: Checkout vscode-icons icons folder
+        uses: actions/checkout@v4
+        with:
+          repository: vscode-icons/vscode-icons
+          ref: ${{ steps.tag.outputs.tag }}
+          sparse-checkout: |
+            icons
+          sparse-checkout-cone-mode: true
+          path: upstream
+
+      # ── 4. Run the PowerShell preview generator ───────────────────────────
+      - name: Generate icon preview HTML
+        shell: pwsh
+        run: |
+          ./scripts/New-IconPreview.ps1 `
+            -IconsPath  "./upstream/icons" `
+            -OutputFile "./site/index.html" `
+            -Recurse
+
+      # ── 5. Inject release badge into the page ─────────────────────────────
+      - name: Inject upstream version into HTML
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          sed -i "s|Generated:|Based on vscode-icons <strong>${TAG}</strong> &nbsp;&middot;&nbsp; Generated:|" site/index.html
+
+      # ── 6. Store updated release tag & commit back ────────────────────────
+      - name: Persist release tag
+        run: |
+          echo "${{ steps.tag.outputs.tag }}" > .last-release
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .last-release
+          git diff --cached --quiet || git commit -m "chore: track vscode-icons ${{ steps.tag.outputs.tag }}"
+          git push
+
+      # ── 7. Upload site/ as Pages artifact ────────────────────────────────
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+      # ── 8. Deploy to GitHub Pages ─────────────────────────────────────────
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
