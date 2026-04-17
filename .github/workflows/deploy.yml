@@ -47,6 +47,18 @@ jobs:
           echo "Using tag: $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      # ── 2b. Validate tag format ───────────────────────────────────────────
+      # Guards against tag injection into the sed command and ensures only
+      # expected semver-style tags (e.g. v12.3.4) are processed.
+      - name: Validate release tag format
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+(\.[0-9]+)*(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Unexpected tag format: '$TAG' — aborting to prevent injection."
+            exit 1
+          fi
+          echo "Tag validated: $TAG"
+
       # ── 3. Sparse-checkout only the icons/ folder from vscode-icons ───────
       - name: Checkout vscode-icons icons folder
         uses: actions/checkout@v4

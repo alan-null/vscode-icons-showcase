@@ -28,33 +28,86 @@
 
 [CmdletBinding()]
 param(
-    [string] $IconsPath  = ".",
-    [string] $OutputFile = ".\icon-preview.html",
-    [switch] $Recurse,
-    [string] $Filter     = "*.svg"
+  [string] $IconsPath = ".",
+  [string] $OutputFile = ".\icon-preview.html",
+  [switch] $Recurse,
+  [string] $Filter = "*.svg"
 )
 
 # ── Resolve paths ─────────────────────────────────────────────────────────────
 
-$IconsPath  = Resolve-Path $IconsPath | Select-Object -ExpandProperty Path
+$IconsPath = Resolve-Path $IconsPath | Select-Object -ExpandProperty Path
 $OutputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputFile)
 
 Write-Host "Scanning: $IconsPath" -ForegroundColor Cyan
 
+# ── SVG sanitisation ──────────────────────────────────────────────────────────
+# Defence against supply-chain attacks: strip every known-dangerous construct
+# before inlining third-party SVG content into HTML.
+function Invoke-SvgSanitize {
+  param(
+    [string] $Svg,
+    [string] $SourcePath = ''
+  )
+
+  $hits = [System.Collections.Generic.List[string]]::new()
+
+  # 1. <script> elements (and their entire content)
+  if ($Svg -match '(?si)<script[\s>/]') {
+    $hits.Add('<script> element')
+    $Svg = $Svg -replace '(?si)<script[\s\S]*?</script\s*>', ''
+    $Svg = $Svg -replace '(?si)<script[^>]*/>', ''
+  }
+
+  # 2. <foreignObject> — embeds arbitrary HTML inside SVG
+  if ($Svg -match '(?si)<foreignObject[\s>/]') {
+    $hits.Add('<foreignObject> element')
+    $Svg = $Svg -replace '(?si)<foreignObject[\s\S]*?</foreignObject\s*>', ''
+  }
+
+  # 3. Inline event-handler attributes (onload=, onclick=, onerror=, …)
+  if ($Svg -match '(?i)\son[a-z]+\s*=') {
+    $hits.Add('event handler attribute(s)')
+    $Svg = $Svg -replace '(?i)\s+on[a-z]+\s*=\s*(?:"[^"]*"|''[^'']*''|[^\s>]*)', ''
+  }
+
+  # 4. javascript: URI schemes in any attribute
+  if ($Svg -match '(?i)javascript\s*:') {
+    $hits.Add('javascript: URI')
+    $Svg = $Svg -replace '(?i)(href|xlink:href|src|action|data)\s*=\s*"[^"]*javascript\s*:[^"]*"', ''
+    $Svg = $Svg -replace "(?i)(href|xlink:href|src|action|data)\s*=\s*'[^']*javascript\s*:[^']*'", ''
+  }
+
+  # 5. External HTTP/HTTPS references — prevents remote payload loading and
+  #    data exfiltration via <image>, <use xlink:href>, CSS url(), etc.
+  if ($Svg -match '(?i)(href|xlink:href|src|data)\s*=\s*["\x27]https?://') {
+    $hits.Add('external HTTP reference')
+    $Svg = $Svg -replace '(?i)(href|xlink:href|src|data)\s*=\s*"https?://[^"]*"', ''
+    $Svg = $Svg -replace "(?i)(href|xlink:href|src|data)\s*=\s*'https?://[^']*'", ''
+  }
+
+  if ($hits.Count -gt 0) {
+    $label = if ($SourcePath) { $SourcePath } else { '(unknown)' }
+    Write-Warning "SUSPICIOUS SVG '$label' — removed: $($hits -join ', ')"
+  }
+
+  return $Svg
+}
+
 # ── Collect SVG files ─────────────────────────────────────────────────────────
 
 $getParams = @{
-    Path    = $IconsPath
-    Filter  = $Filter
-    File    = $true
-    Recurse = $Recurse.IsPresent
+  Path    = $IconsPath
+  Filter  = $Filter
+  File    = $true
+  Recurse = $Recurse.IsPresent
 }
 
 $svgFiles = Get-ChildItem @getParams | Sort-Object Name
 
 if ($svgFiles.Count -eq 0) {
-    Write-Warning "No SVG files found in '$IconsPath' with filter '$Filter'"
-    exit 1
+  Write-Warning "No SVG files found in '$IconsPath' with filter '$Filter'"
+  exit 1
 }
 
 Write-Host "Found $($svgFiles.Count) SVG files" -ForegroundColor Green
@@ -62,43 +115,46 @@ Write-Host "Found $($svgFiles.Count) SVG files" -ForegroundColor Green
 # ── Build icon data array ─────────────────────────────────────────────────────
 
 $iconObjects = foreach ($file in $svgFiles) {
-    $raw = Get-Content $file.FullName -Raw -Encoding UTF8
+  $raw = Get-Content $file.FullName -Raw -Encoding UTF8
 
-    # Strip XML declaration and DOCTYPE if present
-    $raw = $raw -replace '^\s*<\?xml[^?]*\?>\s*', ''
-    $raw = $raw -replace '<!DOCTYPE[^>]*>\s*', ''
-    $raw = $raw.Trim()
+  # Strip XML declaration and DOCTYPE if present
+  $raw = $raw -replace '^\s*<\?xml[^?]*\?>\s*', ''
+  $raw = $raw -replace '<!DOCTYPE[^>]*>\s*', ''
+  $raw = $raw.Trim()
 
-    # Derive a friendly display label from the filename convention:
-    #   folder_type_flutter  ->  "folder/ flutter"
-    #   file_type_ts         ->  "file/ ts"
-    $label = $file.BaseName `
-        -replace '^folder_type_open_', 'folder/ ' `
-        -replace '^folder_type_',      'folder/ ' `
-        -replace '^file_type_',        'file/ '   `
-        -replace '^folder_',           'folder/ ' `
-        -replace '^file_',             'file/ '
+  # Sanitize: strip malicious constructs before inlining into HTML
+  $raw = Invoke-SvgSanitize -Svg $raw -SourcePath $file.Name
 
-    # Relative sub-path for tooltip when using -Recurse
-    $relPath = $file.FullName.Substring($IconsPath.Length).TrimStart('\', '/')
+  # Derive a friendly display label from the filename convention:
+  #   folder_type_flutter  ->  "folder/ flutter"
+  #   file_type_ts         ->  "file/ ts"
+  $label = $file.BaseName `
+    -replace '^folder_type_open_', 'folder/ ' `
+    -replace '^folder_type_', 'folder/ ' `
+    -replace '^file_type_', 'file/ '   `
+    -replace '^folder_', 'folder/ ' `
+    -replace '^file_', 'file/ '
 
-    # Plain hashtable — ConvertTo-Json handles all escaping for us
-    [ordered]@{
-        label = $label
-        name  = $file.BaseName
-        path  = $relPath
-        svg   = $raw
-    }
+  # Relative sub-path for tooltip when using -Recurse
+  $relPath = $file.FullName.Substring($IconsPath.Length).TrimStart('\', '/')
+
+  # Plain hashtable — ConvertTo-Json handles all escaping for us
+  [ordered]@{
+    label = $label
+    name  = $file.BaseName
+    path  = $relPath
+    svg   = $raw
+  }
 }
 
 # Serialize to JSON — correctly escapes quotes, backslashes, unicode, etc.
 # This also avoids any PS/JS ${...} collision inside the here-string.
-$jsonData     = $iconObjects | ConvertTo-Json -Compress -Depth 3
+$jsonData = $iconObjects | ConvertTo-Json -Compress -Depth 3
 $jsIconsArray = "const ICONS = $jsonData;"
 
-$totalCount  = $svgFiles.Count
+$totalCount = $svgFiles.Count
 $generatedAt = Get-Date -Format "yyyy-MM-dd HH:mm"
-$sourceDir   = $IconsPath
+$sourceDir = $IconsPath
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
 # JS inside the here-string uses only plain string concatenation and
@@ -110,6 +166,7 @@ $html = @"
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Icon Preview — $totalCount icons</title>
 <style>
